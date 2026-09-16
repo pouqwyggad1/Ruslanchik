@@ -1,0 +1,12 @@
+.venv/
+venv/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.system_generated/
+*.log
+~$*.xlsx
+~$*.xls
+*.tmp
