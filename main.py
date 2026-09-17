@@ -2,426 +2,371 @@ import os
 import re
 import sys
 import time
-from typing import Dict, List, Any
 
-# Библиотеки автоматизации и работы с документами
+import certifi
 import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.formatting.rule import CellIsRule
-from openpyxl.worksheet.datavalidation import DataValidation
-
 import undetected_chromedriver as uc
+from openpyxl.formatting.rule import CellIsRule
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.datavalidation import DataValidation
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
-# Настройка вывода UTF-8 для корректного отображения кириллицы в консоли Windows
-if sys.stdout.encoding != 'utf-8':
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 
-def init_browser() -> uc.Chrome:
-    """Инициализация браузера с защитой от детекта автоматизации."""
-    print(" [1/7] Запуск браузера Chrome (undetected-chromedriver)...")
+def start_browser():
+    """Запускает Chrome и возвращает объект для управления браузером."""
+    print("Запуск Chrome")
+
     options = uc.ChromeOptions()
     options.add_argument("--start-maximized")
     options.add_argument("--disable-notifications")
-    options.add_argument("--disable-popup-blocking")
-    
+
     driver = uc.Chrome(options=options)
     return driver
 
 
-def close_overlays(driver: uc.Chrome):
-    """Закрытие всплывающих окон города и куки, если они появились."""
-    time.sleep(1)
-    # Подтверждение города (кнопка 'Все верно')
-    try:
-        city_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'Все верно')]")
-        if city_buttons:
-            city_buttons[0].click()
-            time.sleep(0.5)
-    except Exception:
-        pass
+def close_popups(driver):
+    """Закрывает всплывающие окна, если они появились."""
 
-    # Предупреждение о cookie (кнопка 'Понятно')
-    try:
-        cookie_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'Понятно')]")
-        if cookie_buttons:
-            cookie_buttons[0].click()
-            time.sleep(0.5)
-    except Exception:
-        pass
+    # На сайте могут появиться разные кнопки закрытия.
+    # Для каждой кнопки указан свой XPath.
+    popups = [
+        "//button[contains(text(), 'Все верно')]",
+        "//button[contains(text(), 'Понятно')]",
+        "//button[@aria-label='Закрыть']",
+    ]
 
-    # Окно с информацией об избранном
-    try:
-        close_modal = driver.find_elements(By.XPATH, "//button[contains(@class, 'modal__close') or @aria-label='Закрыть']")
-        if close_modal:
-            close_modal[0].click()
-            time.sleep(0.5)
-    except Exception:
-        pass
+    for xpath in popups:
+        try:
+            buttons = driver.find_elements(By.XPATH, xpath)
+            if buttons:
+                buttons[0].click()
+                time.sleep(1)
+        except Exception:
+            # Если окна нет или оно уже закрылось, продолжаем работу.
+            pass
 
 
-def search_products(driver: uc.Chrome, search_term: str = "мышь"):
-    """Шаг 1: Поиск товаров через поисковую строку."""
-    print(f" [2/7] Открытие сайта https://www.dns-shop.ru/ и поиск по запросу '{search_term}'...")
+def search_products(driver, search_text):
+    """Открывает DNS и выполняет поиск товаров."""
+    print(f"Поиск товаров по запросу: {search_text}")
+
     driver.get("https://www.dns-shop.ru/")
-    
-    wait = WebDriverWait(driver, 20)
-    close_overlays(driver)
+    close_popups(driver)
 
-    # Поиск поля ввода
+    # Ждём, пока строка поиска станет доступна для ввода.
+    wait = WebDriverWait(driver, 20)
     search_input = wait.until(
-        EC.element_to_be_clickable((By.XPATH, "//input[@type='search' or contains(@placeholder, 'Поиск')]"))
+        EC.element_to_be_clickable(
+            (By.XPATH, "//input[@type='search' or contains(@placeholder, 'Поиск')]")
+        )
     )
-    search_input.click()
-    time.sleep(0.5)
+
     search_input.clear()
-    search_input.send_keys(search_term)
-    time.sleep(0.5)
+    search_input.send_keys(search_text)
     search_input.send_keys(Keys.ENTER)
 
-    # Ожидание загрузки каталога товаров
-    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "[data-id='product'], .catalog-product")))
-    close_overlays(driver)
+    # Ждём появления хотя бы одной карточки товара.
+    wait.until(
+        EC.presence_of_element_located(
+            (By.CSS_SELECTOR, "[data-id='product'], .catalog-product")
+        )
+    )
     time.sleep(2)
-    print("   -> Результаты поиска успешно загружены.")
+    close_popups(driver)
 
 
-def sort_by_reviews(driver: uc.Chrome):
-    """Шаг 2: Изменение сортировки на 'По количеству отзывов'."""
-    print(" [3/7] Изменение сортировки на 'По количеству отзывов'...")
+def sort_products(driver):
+    """Выбирает сортировку по количеству отзывов."""
+    print("Сортировка товаров по количеству отзывов")
+
     wait = WebDriverWait(driver, 15)
-    close_overlays(driver)
 
-    # Клик по блоку сортировки
-    sort_dropdown = wait.until(
-        EC.element_to_be_clickable((By.XPATH, "//*[contains(@class, 'top-filter')]//span[contains(text(), 'Сортировка')]/.. | //*[contains(@class, 'top-filter__label')]/.."))
+    # Открываем список вариантов сортировки
+    sort_button = wait.until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//*[contains(@class, 'top-filter__label')]/.. "
+                "| //span[contains(text(), 'Сортировка')]/..",
+            )
+        )
     )
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", sort_dropdown)
-    time.sleep(0.5)
-    sort_dropdown.click()
-    time.sleep(1)
+    sort_button.click()
 
-    # Выбор пункта 'По количеству отзывов'
-    review_option = wait.until(
-        EC.element_to_be_clickable((By.XPATH, "//label[contains(., 'По количеству отзывов')] | //span[contains(., 'По количеству отзывов')]"))
+    # Выбираем нужный пункт
+    reviews_button = wait.until(
+        EC.element_to_be_clickable(
+            (
+                By.XPATH,
+                "//label[contains(., 'По количеству отзывов')] "
+                "| //span[contains(., 'По количеству отзывов')]",
+            )
+        )
     )
-    review_option.click()
-    print("   -> Сортировка переключена, ожидание обновления каталога...")
+    reviews_button.click()
+
+    # Пауза нужна, чтобы каталог успел обновиться
     time.sleep(4)
-    close_overlays(driver)
 
 
-def parse_page_products(driver: uc.Chrome) -> List[Dict[str, Any]]:
-    """Извлечение товаров с первой страницы каталога."""
-    print(" [4/7] Сбор информации о товарах с первой страницы...")
-    product_cards = driver.find_elements(By.CSS_SELECTOR, "[data-id='product'], .catalog-product")
-    print(f"   -> Найдено карточек товаров: {len(product_cards)}")
+def get_number(text):
+    """Оставляет в строке только цифры и возвращает целое число."""
+    digits = re.sub(r"[^0-9]", "", text)
+    return int(digits) if digits else 0
 
-    products: List[Dict[str, Any]] = []
 
-    for index, card in enumerate(product_cards):
+def collect_products(driver):
+    """Собирает данные обо всех товарах с первой страницы."""
+    print("Сбор названий, цен и рейтингов товаров")
+
+    cards = driver.find_elements(
+        By.CSS_SELECTOR, "[data-id='product'], .catalog-product"
+    )
+    products = []
+
+    for card in cards:
         try:
-            # Название товара
-            title_el = card.find_element(By.CSS_SELECTOR, "a.catalog-product__name, [data-role='product-title'], a[class*='name']")
-            title = title_el.text.strip()
-            if not title:
-                continue
+            # Получаем название товара
+            title = card.find_element(
+                By.CSS_SELECTOR,
+                "a.catalog-product__name, [data-role='product-title']",
+            ).text.strip()
 
-            # Цена товара
-            price = 0
+            # Из строки "5 999 ₽" получаем число 5999
             try:
-                price_el = card.find_element(By.CSS_SELECTOR, ".product-buy__price, [class*='price__current'], [class*='buy__price']")
-                price_text = price_el.text.strip()
-                match_price = re.search(r"(\d[\d\s]*)\s*₽", price_text)
-                if match_price:
-                    price = int(re.sub(r"\s+", "", match_price.group(1)))
-                else:
-                    digits = re.sub(r"[^\d]", "", price_text)
-                    price = int(digits) if digits else 0
+                price_text = card.find_element(
+                    By.CSS_SELECTOR,
+                    ".product-buy__price, [class*='price__current']",
+                ).text
+                price = get_number(price_text)
             except Exception:
                 price = 0
 
-            # Рейтинг товара
-            rating = 0.0
+            # Запятую в рейтинге заменяем точкой для преобразования в float
             try:
-                rating_el = card.find_element(By.CSS_SELECTOR, "a.catalog-product__rating, [data-rating], [class*='rating']")
-                rating_text = rating_el.text.strip()
-                match_rating = re.search(r"(\d+(?:[.,]\d+)?)", rating_text)
-                if match_rating:
-                    rating = float(match_rating.group(1).replace(",", "."))
+                rating_text = card.find_element(
+                    By.CSS_SELECTOR,
+                    "a.catalog-product__rating, [data-rating], [class*='rating']",
+                ).text
+                result = re.search(r"\d+(?:[.,]\d+)?", rating_text)
+                rating = float(result.group().replace(",", ".")) if result else 0
             except Exception:
-                rating = 0.0
+                rating = 0
 
-            # Кнопка добавления в избранное
-            fav_btn = None
-            try:
-                btns = card.find_elements(By.CSS_SELECTOR, "button.button-ui_white, button[class*='wishlist'], button[class*='favorite'], button[class*='like']")
-                for b in btns:
-                    label = (b.get_attribute("title") or b.get_attribute("aria-label") or "").lower()
-                    cls = (b.get_attribute("class") or "").lower()
-                    if "избранн" in label or "like" in cls or "wishlist" in cls:
-                        fav_btn = b
-                        break
-                if not fav_btn and btns:
-                    fav_btn = btns[0]
-            except Exception:
-                pass
+            # Ищем кнопку добавления в избранное внутри карточки
+            favorite_button = None
+            buttons = card.find_elements(
+                By.CSS_SELECTOR,
+                "button[class*='wishlist'], button[class*='favorite'], "
+                "button[class*='like'], button.button-ui_white",
+            )
 
-            products.append({
-                "index": index,
-                "title": title,
-                "price": price,
-                "rating": rating,
-                "fav_btn": fav_btn,
-                "status": "-"
-            })
-        except Exception as err:
-            print(f"   [Предупреждение] Ошибка парсинга карточки {index}: {err}")
+            for button in buttons:
+                name = (
+                    (button.get_attribute("title") or "")
+                    + (button.get_attribute("aria-label") or "")
+                    + (button.get_attribute("class") or "")
+                ).lower()
 
-    print(f"   -> Успешно обработано товаров: {len(products)}")
+                if "избран" in name or "wishlist" in name or "like" in name:
+                    favorite_button = button
+                    break
+
+            # Все данные одного товара хранятся в словаре
+            products.append(
+                {
+                    "title": title,
+                    "price": price,
+                    "rating": rating,
+                    "favorite_button": favorite_button,
+                    "status": "-",
+                }
+            )
+
+        except Exception as error:
+            # Ошибка одной карточки не останавливает сбор остальных
+            print("Не удалось прочитать одну карточку:", error)
+
+    print("Найдено товаров:", len(products))
     return products
 
 
-def add_cheapest_to_favorites(driver: uc.Chrome, products: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Шаг 3: Поиск самого дешевого товара и добавление его в избранное."""
-    print(" [5/7] Поиск самого дешевого товара и добавление в избранное...")
-    valid_products = [p for p in products if p["price"] > 0]
-    if not valid_products:
-        raise RuntimeError("Не удалось найти товары с указанной ценой!")
+def add_cheapest_to_favorites(driver, products):
+    """Находит самый дешёвый товар и добавляет его в избранное."""
+    print("Добавление самого дешёвого товара в избранное")
 
-    cheapest = min(valid_products, key=lambda x: x["price"])
-    cheapest["status"] = "+"
-    print(f"   -> Самый дешевый товар: '{cheapest['title']}' | Цена: {cheapest['price']} руб.")
+    # Нулевую цену не учитываем: она означает, что цена не распозналась
+    products_with_price = [product for product in products if product["price"] > 0]
 
-    if cheapest["fav_btn"]:
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", cheapest["fav_btn"])
-        time.sleep(1)
-        try:
-            cheapest["fav_btn"].click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", cheapest["fav_btn"])
-        time.sleep(2)
-        print("   -> Товар успешно добавлен в избранное!")
-        close_overlays(driver)
-    else:
-        print("   [Внимание] Кнопка добавления в избранное для данного товара не найдена.")
+    if not products_with_price:
+        raise RuntimeError("Не удалось получить цены товаров")
 
-    return cheapest
+    # key указывает, что товары нужно сравнивать по полю price
+    cheapest = min(products_with_price, key=lambda product: product["price"])
+    button = cheapest["favorite_button"]
 
+    print("Самый дешёвый товар:", cheapest["title"])
+    print("Цена:", cheapest["price"], "руб.")
 
-def export_to_excel(products: List[Dict[str, Any]], filename: str = "products.xlsx"):
-    """
-    Часть 2: Формирование документа .xlsx со всеми требованиями:
-    1) Формат: Название, Цена, Рейтинг, Статус.
-    2) Заливка шапки цветом.
-    3) Сортировка по названию в алфавитном порядке + фильтр Excel.
-    4) Формула MIN по столбцу 'Цена'.
-    5) Условное форматирование 'Рейтинг': >= 4.8 зеленый, < 4.8 красный.
-    6) Условное форматирование 'Статус': '+' зеленый, '-' красный + выпадающий список.
-    """
-    print(f" [6/7] Формирование отчета Excel ({filename})...")
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Товары"
+    if button is None:
+        raise RuntimeError("Не найдена кнопка добавления в избранное")
 
-    # Требование 3: Таблица отсортирована по названию в алфавитном порядке
-    sorted_products = sorted(products, key=lambda x: x["title"].lower())
-
-    # Требование 1: Шапка таблицы
-    headers = ["Название", "Цена", "Рейтинг", "Статус"]
-    ws.append(headers)
-
-    # Добавление строк данных
-    for p in sorted_products:
-        ws.append([p["title"], p["price"], p["rating"], p["status"]])
-
-    last_row = len(sorted_products) + 1  # последняя строка данных (с учетом шапки)
-
-    # Требование 2: Шапку таблицы нужно залить цветом
-    header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")  # Синий корпоративный
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-    thin_border = Border(
-        left=Side(style="thin", color="D9D9D9"),
-        right=Side(style="thin", color="D9D9D9"),
-        top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9")
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: 'center'});", button
     )
 
-    for cell in ws[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = center_align
-
-    # Форматирование ячеек данных
-    for row in range(2, last_row + 1):
-        ws.cell(row=row, column=1).alignment = Alignment(horizontal="left", vertical="center")
-        ws.cell(row=row, column=2).alignment = Alignment(horizontal="right", vertical="center")
-        ws.cell(row=row, column=2).number_format = '#,##0 "₽"'
-        ws.cell(row=row, column=3).alignment = Alignment(horizontal="center", vertical="center")
-        ws.cell(row=row, column=3).number_format = '0.00'
-        ws.cell(row=row, column=4).alignment = Alignment(horizontal="center", vertical="center")
-
-        for col in range(1, 5):
-            ws.cell(row=row, column=col).border = thin_border
-
-    # Требование 3: Фильтр Excel со связкой сортировки
-    ws.auto_filter.ref = f"A1:D{last_row}"
-    ws.auto_filter.add_sort_condition(f"A2:A{last_row}", descending=False)
-
-    # Требование 4: После последней ячейки в столбце 'Цена' - формула MIN
-    min_row = last_row + 1
-    cell_min_label = ws.cell(row=min_row, column=1, value="Минимальная цена")
-    cell_min_label.font = Font(name="Calibri", size=11, bold=True)
-    cell_min_label.alignment = Alignment(horizontal="right", vertical="center")
-
-    cell_min_value = ws.cell(row=min_row, column=2, value=f"=MIN(B2:B{last_row})")
-    cell_min_value.font = Font(name="Calibri", size=11, bold=True)
-    cell_min_value.number_format = '#,##0 "₽"'
-    cell_min_value.alignment = Alignment(horizontal="right", vertical="center")
-
-    total_fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-    cell_min_label.fill = total_fill
-    cell_min_value.fill = total_fill
-    cell_min_label.border = thin_border
-    cell_min_value.border = thin_border
-
-    # Цветовые стили для условного форматирования
-    green_fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    green_font = Font(color="006100", bold=True)
-    red_fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-    red_font = Font(color="9C0006", bold=True)
-
-    # Требование 5: Условное форматирование столбца 'Рейтинг' (C2:C{last_row})
-    rule_rating_green = CellIsRule(operator="greaterThanOrEqual", formula=["4.8"], stopIfTrue=True, fill=green_fill, font=green_font)
-    rule_rating_red = CellIsRule(operator="lessThan", formula=["4.8"], stopIfTrue=True, fill=red_fill, font=red_font)
-    ws.conditional_formatting.add(f"C2:C{last_row}", rule_rating_green)
-    ws.conditional_formatting.add(f"C2:C{last_row}", rule_rating_red)
-
-    # Требование 6: Условное форматирование столбца 'Статус' (D2:D{last_row})
-    rule_status_plus = CellIsRule(operator="equal", formula=['"+"'], stopIfTrue=True, fill=green_fill, font=green_font)
-    rule_status_minus = CellIsRule(operator="equal", formula=['"-"'], stopIfTrue=True, fill=red_fill, font=red_font)
-    ws.conditional_formatting.add(f"D2:D{last_row}", rule_status_plus)
-    ws.conditional_formatting.add(f"D2:D{last_row}", rule_status_minus)
-
-    # Требование 6: Выпадающий список выбора только из '+' и '-'
-    dv = DataValidation(type="list", formula1='"+,-"', allow_blank=False)
-    dv.errorTitle = "Недопустимый статус"
-    dv.error = "Выберите значение из выпадающего списка: '+' или '-'"
-    dv.promptTitle = "Статус товара"
-    dv.prompt = "Выберите '+' (в избранном) или '-' (не в избранном)"
-    ws.add_data_validation(dv)
-    dv.add(f"D2:D{last_row}")
-
-    # Автоматическая настройка ширины столбцов
-    for col in ws.columns:
-        max_len = 0
-        col_letter = col[0].column_letter
-        for cell in col:
-            val_str = str(cell.value or "")
-            if cell.number_format and "₽" in cell.number_format and isinstance(cell.value, (int, float)):
-                val_str = f"{cell.value:,} ₽"
-            if len(val_str) > max_len:
-                max_len = len(val_str)
-        ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
-
-    # Комфортная ширина для столбца с названием
-    ws.column_dimensions["A"].width = 50
-
-    saved = False
-    current_filename = filename
-    while not saved:
-        try:
-            wb.save(current_filename)
-            print(f"   -> Файл '{current_filename}' успешно сохранен со всеми требованиями.")
-            saved = True
-        except PermissionError:
-            fallback_filename = f"products_{int(time.time())}.xlsx"
-            print(f"\n   [Внимание!] Файл '{current_filename}' сейчас открыт в Excel (или другой программе).")
-            print("   Windows блокирует перезапись открытых файлов.")
-            print(f"   Пожалуйста, закройте '{current_filename}' в Excel и нажмите Enter для повторной попытки,")
-            print(f"   или введите 'new', чтобы сохранить файл как '{fallback_filename}': ", end="", flush=True)
-            try:
-                choice = input().strip().lower()
-                if choice in ("new", "n", "yes", "y", "нов", "новый"):
-                    current_filename = fallback_filename
-            except Exception:
-                current_filename = fallback_filename
-
-
-def go_to_wishlist(driver: uc.Chrome):
-    """Шаг 4: Переход на вкладку 'Избранное' и удержание окна открытым."""
-    print(" [7/7] Переход на вкладку 'Избранное'...")
     try:
-        fav_link = driver.find_element(By.XPATH, "//a[contains(@href, 'wishlist') or contains(., 'Избранное')]")
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", fav_link)
-        time.sleep(0.5)
-        fav_link.click()
+        button.click()
     except Exception:
-        driver.get("https://www.dns-shop.ru/profile/wishlist/")
+        # Запасной способ нажатия через JavaScript
+        driver.execute_script("arguments[0].click();", button)
 
+    # Меняем статус только после нажатия кнопки
+    cheapest["status"] = "+"
+    time.sleep(2)
+    close_popups(driver)
+
+
+def create_excel(products, filename):
+    """Создаёт и оформляет Excel-отчёт."""
+    print("Создание Excel")
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Товары"
+
+    # Сортируем товары по названию без учёта регистра букв
+    products.sort(key=lambda product: product["title"].lower())
+
+    # Записываем заголовки и данные
+    sheet.append(["Название", "Цена", "Рейтинг", "Статус"])
+
+    for product in products:
+        sheet.append(
+            [
+                product["title"],
+                product["price"],
+                product["rating"],
+                product["status"],
+            ]
+        )
+
+    last_row = len(products) + 1
+
+    # Создаём стили, которые будем применять к ячейкам
+    blue_fill = PatternFill("solid", fgColor="366092")
+    white_font = Font(color="FFFFFF", bold=True)
+    gray_line = Side(style="thin", color="D9D9D9")
+    border = Border(left=gray_line, right=gray_line, top=gray_line, bottom=gray_line)
+
+    # Оформляем шапку таблицы
+    for cell in sheet[1]:
+        cell.fill = blue_fill
+        cell.font = white_font
+        cell.alignment = Alignment(horizontal="center")
+
+    # Оформляем строки с товарами
+    for row in range(2, last_row + 1):
+        for column in range(1, 5):
+            sheet.cell(row, column).border = border
+
+        sheet.cell(row, 2).number_format = '#,##0 "₽"'
+        sheet.cell(row, 3).number_format = "0.00"
+        sheet.cell(row, 3).alignment = Alignment(horizontal="center")
+        sheet.cell(row, 4).alignment = Alignment(horizontal="center")
+
+    # Добавляем фильтр на всю таблицу.
+    sheet.auto_filter.ref = f"A1:D{last_row}"
+
+    # Под таблицей записываем формулу минимальной цены
+    formula_row = last_row + 1
+    sheet.cell(formula_row, 1, "Минимальная цена").font = Font(bold=True)
+    sheet.cell(formula_row, 2, f"=MIN(B2:B{last_row})").font = Font(bold=True)
+    sheet.cell(formula_row, 2).number_format = '#,##0 "₽"'
+
+    # Цвета для условного форматирования
+    green_fill = PatternFill("solid", fgColor="C6EFCE")
+    red_fill = PatternFill("solid", fgColor="FFC7CE")
+
+    # Рейтинг 4.8 и выше будет зелёным, остальные - красными
+    sheet.conditional_formatting.add(
+        f"C2:C{last_row}",
+        CellIsRule(operator="greaterThanOrEqual", formula=["4.8"], fill=green_fill),
+    )
+    sheet.conditional_formatting.add(
+        f"C2:C{last_row}",
+        CellIsRule(operator="lessThan", formula=["4.8"], fill=red_fill),
+    )
+
+    # Статус "+" - зелёным, а статус "-" - красным.
+    sheet.conditional_formatting.add(
+        f"D2:D{last_row}",
+        CellIsRule(operator="equal", formula=['"+"'], fill=green_fill),
+    )
+    sheet.conditional_formatting.add(
+        f"D2:D{last_row}",
+        CellIsRule(operator="equal", formula=['"-"'], fill=red_fill),
+    )
+
+    # Создаём выпадающий список, в котором можно выбрать только + или -
+    status_list = DataValidation(type="list", formula1='"+,-"')
+    sheet.add_data_validation(status_list)
+    status_list.add(f"D2:D{last_row}")
+
+    # Настраиваем ширину столбцов
+    sheet.column_dimensions["A"].width = 55
+    sheet.column_dimensions["B"].width = 15
+    sheet.column_dimensions["C"].width = 15
+    sheet.column_dimensions["D"].width = 15
+
+    workbook.save(filename)
+    print("Файл сохранён:", filename)
+
+
+def open_favorites(driver):
+    """Открывает страницу избранных товаров."""
+    print("Открываем избранное")
+
+    # Прямой переход
+    driver.get("https://www.dns-shop.ru/profile/wishlist/")
     time.sleep(3)
-    close_overlays(driver)
-    print("\n" + "="*70)
-    print(" РОБОТ УСПЕШНО ВЫПОЛНИЛ ВСЕ ШАГИ ЗАДАНИЯ!")
-    print(f" Браузер открыт на странице: {driver.current_url}")
-    print(" Согласно требованию шага 4, окно браузера НЕ закрывается.")
-    print(" Чтобы завершить работу программы, нажмите Enter в этой консоли...")
-    print("="*70 + "\n")
+    close_popups(driver)
 
 
 def main():
-    search_query = "мышь"
-    if len(sys.argv) > 1:
-        search_query = " ".join(sys.argv[1:])
-
+    """Главная функция: по очереди вызывает все этапы программы."""
+    # Если запрос не указан, программа ищет мыши
+    # sys.argv содержит слова, написанные после имени файла
+    search_text = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "мышь"
     driver = None
+
     try:
-        # Часть 1: Шаги 1-3
-        driver = init_browser()
-        search_products(driver, search_query)
-        sort_by_reviews(driver)
-        products = parse_page_products(driver)
-        
+        driver = start_browser()
+        search_products(driver, search_text)
+        sort_products(driver)
+
+        products = collect_products(driver)
         if not products:
-            print("Ошибка: не удалось найти товары на странице!")
-            return
+            raise RuntimeError("На странице не найдено ни одного товара")
 
-        cheapest = add_cheapest_to_favorites(driver, products)
+        add_cheapest_to_favorites(driver, products)
+        create_excel(products, "products.xlsx")
+        open_favorites(driver)
 
-        # Часть 2: Выполняется после шага 3 части 1
-        export_to_excel(products, "products.xlsx")
+        input("Готово. Нажмите Enter, чтобы закрыть браузер")
 
-        # Часть 1: Шаг 4 - переход в избранное без закрытия окна
-        go_to_wishlist(driver)
+    except Exception as error:
+        print("Ошибка:", error)
 
-        # Ожидание действия пользователя для остановки без закрытия
-        try:
-            input("Нажмите Enter для завершения программы и закрытия браузера...")
-        except (EOFError, KeyboardInterrupt):
-            pass
-
-    except Exception as e:
-        print(f"\n[Критическая ошибка]: {e}")
-        import traceback
-        traceback.print_exc()
     finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-            driver.__del__ = lambda: None
-            print("Браузер закрыт.")
-
+        # finally выполняется и при успешной работе, и при ошибке
+        if driver is not None:
+            driver.quit()
 
 if __name__ == "__main__":
     main()
